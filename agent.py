@@ -18,8 +18,14 @@ class ZepConversableAgent(ConversableAgent):
         function_map=None,
         human_input_mode: str = "NEVER",
     ):
+        # Replace spaces with underscores in the name to satisfy Autogen's validation
+        modified_name = name.replace(" ", "_")
+        
+        # Store original name for display purposes
+        self.display_name = name
+        
         super().__init__(
-            name=name,
+            name=modified_name,
             system_message=system_message,
             llm_config=llm_config,
             human_input_mode=human_input_mode,
@@ -53,7 +59,7 @@ class ZepConversableAgent(ConversableAgent):
             
             if content:
                 zep_message = Message(
-                    role_type="assistant", role=self.name, content=content
+                    role_type="assistant", role=self.display_name, content=content
                 )
                 self.zep_client.memory.add(
                     session_id=self.zep_session_id, messages=[zep_message]
