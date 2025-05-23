@@ -204,26 +204,76 @@ def get_user_tickets(user_id):
         return []
         
     try:
-        # Get all sessions for the user
-        sessions = zep.memory.get_sessions(user_id)
+        # List all sessions 
+        sessions = zep.memory.list_sessions()
         
-        # Filter for support ticket sessions
+        # Filter for support ticket sessions that belong to the user
         tickets = []
         for session in sessions:
             metadata = session.metadata
-            if metadata and "ticket_id" in metadata and "issue_type" in metadata:
-                if metadata["issue_type"] == "customer_support":
-                    tickets.append({
-                        "ticket_id": metadata["ticket_id"],
-                        "created_at": metadata.get("created_at", "Unknown"),
-                        "status": metadata.get("status", "open"),
-                        "issue_title": metadata.get("issue_title", "Untitled Issue"),
-                    })
+            # Check if this session belongs to our user and is a support ticket
+            if (metadata and 
+                metadata.get("user_id") == user_id and 
+                "ticket_id" in metadata and 
+                "issue_type" in metadata and
+                metadata["issue_type"] == "customer_support"):
+                
+                tickets.append({
+                    "ticket_id": metadata["ticket_id"],
+                    "created_at": metadata.get("created_at", "Unknown"),
+                    "status": metadata.get("status", "open"),
+                    "issue_title": metadata.get("issue_title", "Untitled Issue"),
+                })
         
         return tickets
     except Exception as e:
         st.error(f"Failed to retrieve tickets: {e}")
         return []
+
+
+def create_support_ticket(user_id, issue_title, issue_description):
+    """Create a new support ticket and return the ticket ID."""
+    # Generate a ticket ID with timestamp for uniqueness
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    ticket_id = f"TICKET-{timestamp}-{user_id[:5]}"
+    
+    # Store ticket metadata in Zep
+    if zep:
+        metadata = {
+            "ticket_id": ticket_id,
+            "created_at": datetime.now().isoformat(),
+            "status": "open",
+            "issue_title": issue_title,
+            "issue_type": "customer_support",
+            "user_id": user_id,  # Add user_id to metadata for filtering
+        }
+        
+        # Create a new session for this ticket
+        try:
+            # Add session with metadata
+            zep.memory.add_session(
+                user_id=user_id,
+                session_id=ticket_id,
+                metadata=metadata
+            )
+            
+            # Add the initial description as the first message
+            zep.memory.add(
+                session_id=ticket_id,
+                messages=[
+                    Message(
+                        role_type="user",
+                        role=user_id,
+                        content=f"TICKET DESCRIPTION: {issue_description}",
+                    )
+                ]
+            )
+            
+            return ticket_id
+        except Exception as e:
+            st.error(f"Failed to create ticket: {e}")
+            return None
+    return None
 
 
 def update_ticket_status(ticket_id, new_status):
@@ -320,7 +370,7 @@ def customer_support_view():
         st.warning("Please enter your information to continue")
         return
     
-    # Initialize tabs
+    # Create the tabs for different sections
     tab1, tab2, tab3 = st.tabs(["Create Ticket", "My Tickets", "Current Chat"])
     
     with tab1:
@@ -390,7 +440,8 @@ def customer_support_view():
                 
                 # Initialize a new session with the selected ticket ID
                 initialize_session(first_name, last_name, is_support_agent=True, ticket_id=selected_ticket)
-                st.session_state.active_tab = "Current Chat"
+                st.session_state.active_ticket = selected_ticket
+                st.session_state.current_view = "chat"
                 st.experimental_rerun()
                 
             # Allow user to close a ticket
@@ -419,6 +470,7 @@ def customer_support_view():
     
     with tab3:
         st.header("Support Conversation")
+        
         if "chat_initialized" in st.session_state and st.session_state.chat_initialized:
             if "active_ticket" in st.session_state:
                 st.info(f"Active Ticket: {st.session_state.active_ticket}")
@@ -427,16 +479,23 @@ def customer_support_view():
             for message in st.session_state.messages:
                 with st.chat_message(message["role"]):
                     st.markdown(message["content"])
-            
-            # Create support agent
-            agent, user = create_agents(is_support_mode=True)
-            
-            # Handle user input
-            if prompt := st.chat_input("Type your message here..."):
-                handle_conversations(agent, user, prompt)
         else:
             st.info("Please select or create a ticket to start a conversation")
-
+    
+    # Chat input OUTSIDE tabs - only show when in chat mode and initialized
+    if (st.session_state.get("chat_initialized", False) and 
+        st.session_state.get("is_support_mode", False)):
+        
+        # Create support agent
+        agent, user = create_agents(is_support_mode=True)
+        
+        # Handle user input - IMPORTANT: This is outside the tabs
+        if prompt := st.chat_input("Type your message here..."):
+            if not agent or not user:
+                st.error("Failed to create agents. Please check configuration.")
+                return
+                
+            handle_conversations(agent, user, prompt)
 
 def main():
     """Main application entry point."""
@@ -575,7 +634,6 @@ def main():
             st.info(
                 "Please enter your name and initialize a session to begin chatting 💬"
             )
-
 
 # Run the Streamlit app
 if __name__ == "__main__":
